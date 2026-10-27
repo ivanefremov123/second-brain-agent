@@ -11,6 +11,7 @@ import logging
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -49,7 +50,8 @@ ac.handle_incoming_task = fake_handle
 
 
 def old_task(action="clone", hours=3, **extra):
-    return {"id": f"t_{action}_{time.time()}", "action": action, "project_name": "notepad4", "chat_id": 1,
+    # uuid, а не время: таймер Windows на серверах сборки грубый (~15 мс), и id совпадали
+    return {"id": f"t_{action}_{uuid.uuid4().hex}", "action": action, "project_name": "notepad4", "chat_id": 1,
             "message_id": 5, "signed_at": int(time.time() - hours * 3600), **extra}
 
 
