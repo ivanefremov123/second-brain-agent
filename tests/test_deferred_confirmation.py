@@ -14,6 +14,10 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# Консоль Windows на серверах сборки — cp1252: без этого падает вывод русских названий проверок
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, str(ROOT))
 
 from bot import agent_core as ac  # noqa: E402
