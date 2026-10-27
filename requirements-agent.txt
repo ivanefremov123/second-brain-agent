@@ -1,0 +1,6 @@
+# Зависимости только агента (SecondBrainAgent.exe). Полный набор для локального бота — requirements.txt
+httpx>=0.28.1
+python-dotenv>=1.0.1
+psutil>=5.9.0
+py7zr>=0.22.0
+certifi
