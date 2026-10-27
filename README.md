@@ -6,13 +6,19 @@
 * Сам выбирает правильный файл релиза под ваш процессор и систему (x64 / ARM, portable / установщик).
 * Распаковывает `.zip`, `.7z`, `.tar.gz` и проверяет, что внутри есть программа.
 * Если программе нужна Java, Python, Node.js, Go или Rust — предлагает установить через winget.
-* Ничего не выполняет без подписи от облака бота; задачи, ждавшие выключенный компьютер, подтверждаются окном на экране.
+* Выполняет только команды, подписанные ключом именно этого компьютера; задачи, ждавшие выключенный компьютер,
+  подтверждаются окном на экране.
+* Не знает токена бота: сообщения в Telegram отправляет через облако, и только в ваш чат.
 
 ## Установка (Windows 10/11)
 
 1. Скачайте `SecondBrainAgent-windows-x64.zip` со страницы [Releases](../../releases/latest).
 2. Распакуйте архив в удобную папку (например, `C:\Programs\SecondBrainAgent`).
 3. Запустите `SecondBrainAgent.exe`.
+4. В боте откройте «Подключить компьютер» → «Получить код» и введите 6 цифр в окне агента.
+   Там же можно включить запуск вместе с Windows.
+
+Отключить компьютер: в боте «Подключить компьютер» → «Забыть». Агент сам сбросит подключение и остановится.
 
 ### «Система Windows защитила ваш компьютер»
 
@@ -27,7 +33,7 @@
 
 Настройки и журналы агента хранятся в `%APPDATA%\SecondBrain`:
 
-* `agent.env` — настройки (образец — `agent.env.example`);
+* `agent.env` — настройки; после подключения по коду там хранятся номер и ключ этого компьютера;
 * `logs\agent.log` — журнал работы.
 
 Служебные команды:
@@ -36,6 +42,8 @@
 SecondBrainAgent.exe --selftest            проверка, что агент запускается
 SecondBrainAgent.exe --install-autostart   запускать вместе с Windows
 SecondBrainAgent.exe --remove-autostart    убрать из автозапуска
+SecondBrainAgent.exe --pair 123456         подключить компьютер кодом из бота без окна
+SecondBrainAgent.exe --unpair              сбросить подключение на этом компьютере
 ```
 
 ## Сборка из исходников
@@ -44,5 +52,6 @@ SecondBrainAgent.exe --remove-autostart    убрать из автозапус�
 pip install -r requirements-agent.txt pyinstaller
 python tests/test_launch_selection.py
 python tests/test_deferred_confirmation.py
+python tests/test_device_link.py
 pyinstaller --noconfirm packaging/SecondBrainAgent.spec
 ```

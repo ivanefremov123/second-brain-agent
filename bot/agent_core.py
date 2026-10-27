@@ -17,6 +17,7 @@ from typing import Dict, Any, Optional, Set, Callable
 
 import httpx
 
+from bot import AGENT_VERSION, device_link
 from bot.config import BOT_TOKEN, QUEUE_FILE
 from bot.github_service import cancel_clone, make_progress_bar, download_resource, queue_task_for_antigravity
 from bot.runner_service import (
@@ -80,6 +81,12 @@ def sanitize_keyboard(markup: Optional[Dict[str, Any]], project_name: str = "") 
 def is_task_authentic(task: dict, logger: logging.Logger) -> bool:
     """Очередь kvdb и канал smee.io публичны: принимаем только задачи с валидной подписью облака."""
     action = task.get("action", "?")
+    if device_link.is_paired():
+        # Компьютер пользователя: задачи подписаны ключом этого устройства, а не общим AGENT_SECRET
+        if not device_link.task_signature_ok(task):
+            logger.warning(f"Отклонена задача с неверной или устаревшей подписью устройства: {action}")
+            return False
+        return True
     if not AGENT_SECRET:
         logger.warning(f"Задача {action} отклонена: в .env не задан AGENT_SECRET")
         return False
@@ -100,6 +107,12 @@ def is_task_authentic(task: dict, logger: logging.Logger) -> bool:
         return False
     return True
 
+async def tg_post(client: httpx.AsyncClient, method: str, payload: dict) -> httpx.Response:
+    """Вызов Telegram Bot API. У подключённого по коду компьютера нет BOT_TOKEN — сообщения идут через облако."""
+    if device_link.is_paired():
+        return await device_link.report(client, method, payload)
+    return await client.post(f"{TELEGRAM_API_URL}/{method}", json=payload)
+
 async def _tg_send(chat_id, text: str, markup: Optional[dict] = None, msg_id: Optional[int] = None) -> Optional[int]:
     """Правит сообщение msg_id или отправляет новое; возвращает id итогового сообщения."""
     if not chat_id:
@@ -110,10 +123,10 @@ async def _tg_send(chat_id, text: str, markup: Optional[dict] = None, msg_id: Op
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
             if msg_id:
-                r = await client.post(f"{TELEGRAM_API_URL}/editMessageText", json={**payload, "message_id": msg_id})
+                r = await tg_post(client, "editMessageText", {**payload, "message_id": msg_id})
                 if r.status_code == 200:
                     return msg_id
-            r = await client.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload)
+            r = await tg_post(client, "sendMessage", payload)
             if r.status_code == 200:
                 return r.json().get("result", {}).get("message_id")
     except Exception:
@@ -186,6 +199,8 @@ get_local_installed_tools = get_installed_tool_names
 
 async def sync_installed_tools_to_cloud(downloads_dir: Path, logger: logging.Logger, platform: Optional[str] = None):
     """Синхронизирует актуальный список утилит и метаданные в kvdb под изолированным ключом платформы."""
+    if device_link.is_paired():
+        return  # компьютер пользователя не знает kvdb: список утилит уходит в облако вместе с опросом очереди
     try:
         tools = get_installed_tool_names(downloads_dir)
         clean_plat = (platform or (OS_NAME.lower() if hasattr(OS_NAME, "lower") else "windows")).strip().lower()
@@ -231,6 +246,8 @@ async def send_platform_heartbeat(
     logger: logging.Logger
 ):
     """Отправляет heartbeat конкретной платформы (heartbeat_windows или heartbeat_mac)."""
+    if device_link.is_paired():
+        return  # «в сети» у компьютера пользователя — это его опрос очереди в облаке
     try:
         payload = {
             "timestamp": time.time(),
@@ -366,7 +383,7 @@ async def send_telegram_card(
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload)
+            await tg_post(client, "sendMessage", payload)
     except Exception:
         pass
 
@@ -515,7 +532,7 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
             try:
                 fm_name = "Проводнике" if current_platform == "windows" else "Finder"
                 async with httpx.AsyncClient(timeout=5.0) as client:
-                    await client.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                    await tg_post(client, "sendMessage", {
                         "chat_id": chat_id,
                         "text": f"Папка <b>{html.escape(project_name)}</b> открыта в {fm_name} на {device_label}:\n<code>{html.escape(str(p))}</code>",
                         "parse_mode": "HTML"
@@ -547,7 +564,7 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
         if chat_id:
             try:
                 async with httpx.AsyncClient(timeout=5.0) as client:
-                    await client.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                    await tg_post(client, "sendMessage", {
                         "chat_id": chat_id,
                         "text": f"Страница <b>{html.escape(project_name)}</b> открыта в браузере на вашем {device_label}!\n<code>{html.escape(url_to_open)}</code>",
                         "parse_mode": "HTML"
@@ -614,9 +631,9 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
                                 f"Автоматически скачиваем репозиторий и настраиваем окружение..."
                             )
                             if msg_id:
-                                await client.post(f"{TELEGRAM_API_URL}/editMessageText", json={"chat_id": chat_id, "message_id": msg_id, "text": auto_msg, "parse_mode": "HTML", "reply_markup": cancel_markup})
+                                await tg_post(client, "editMessageText", {"chat_id": chat_id, "message_id": msg_id, "text": auto_msg, "parse_mode": "HTML", "reply_markup": cancel_markup})
                             else:
-                                await client.post(f"{TELEGRAM_API_URL}/sendMessage", json={"chat_id": chat_id, "text": auto_msg, "parse_mode": "HTML", "reply_markup": cancel_markup})
+                                await tg_post(client, "sendMessage", {"chat_id": chat_id, "text": auto_msg, "parse_mode": "HTML", "reply_markup": cancel_markup})
                     except Exception:
                         pass
 
@@ -651,9 +668,9 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
                         try:
                             async with httpx.AsyncClient(timeout=8.0) as client:
                                 if msg_id:
-                                    await client.post(f"{TELEGRAM_API_URL}/editMessageText", json={"chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML", "reply_markup": markup})
+                                    await tg_post(client, "editMessageText", {"chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML", "reply_markup": markup})
                                 else:
-                                    await client.post(f"{TELEGRAM_API_URL}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": markup})
+                                    await tg_post(client, "sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": markup})
                         except Exception:
                             pass
                     return
@@ -671,9 +688,9 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
                     try:
                         async with httpx.AsyncClient(timeout=8.0) as client:
                             if msg_id:
-                                await client.post(f"{TELEGRAM_API_URL}/editMessageText", json={"chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML", "reply_markup": markup})
+                                await tg_post(client, "editMessageText", {"chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML", "reply_markup": markup})
                             else:
-                                await client.post(f"{TELEGRAM_API_URL}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": markup})
+                                await tg_post(client, "sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": markup})
                     except Exception:
                         pass
                 return
@@ -874,21 +891,12 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
             try:
                 async with httpx.AsyncClient(timeout=8.0) as client:
                     if msg_id:
-                        r = await client.post(
-                            f"{TELEGRAM_API_URL}/editMessageText",
-                            json={"chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML", "reply_markup": markup}
-                        )
+                        r = await tg_post(client, "editMessageText", {"chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML", "reply_markup": markup})
                         if r.status_code != 200:
                             logger.info(f"editMessageText non-200 ({r.status_code}), sending fresh message: {r.text[:200]}")
-                            await client.post(
-                                f"{TELEGRAM_API_URL}/sendMessage",
-                                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": markup}
-                            )
+                            await tg_post(client, "sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": markup})
                     else:
-                        await client.post(
-                            f"{TELEGRAM_API_URL}/sendMessage",
-                            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": markup}
-                        )
+                        await tg_post(client, "sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": markup})
             except Exception as e:
                 logger.error(f"Error sending/editing message in agent_core: {e}")
         return
@@ -902,9 +910,9 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
             try:
                 async with httpx.AsyncClient(timeout=6.0) as client:
                     if msg_id:
-                        await client.post(f"{TELEGRAM_API_URL}/editMessageText", json={"chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML"})
+                        await tg_post(client, "editMessageText", {"chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML"})
                     else:
-                        await client.post(f"{TELEGRAM_API_URL}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
+                        await tg_post(client, "sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
             except Exception:
                 pass
         return
@@ -959,9 +967,9 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
             try:
                 async with httpx.AsyncClient(timeout=8.0) as client:
                     if msg_id:
-                        await client.post(f"{TELEGRAM_API_URL}/editMessageText", json={"chat_id": chat_id, "message_id": msg_id, "text": guide_text, "parse_mode": "HTML", "reply_markup": markup})
+                        await tg_post(client, "editMessageText", {"chat_id": chat_id, "message_id": msg_id, "text": guide_text, "parse_mode": "HTML", "reply_markup": markup})
                     else:
-                        await client.post(f"{TELEGRAM_API_URL}/sendMessage", json={"chat_id": chat_id, "text": guide_text, "parse_mode": "HTML", "reply_markup": markup})
+                        await tg_post(client, "sendMessage", {"chat_id": chat_id, "text": guide_text, "parse_mode": "HTML", "reply_markup": markup})
             except Exception:
                 pass
         return
@@ -983,9 +991,9 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
             try:
                 async with httpx.AsyncClient(timeout=8.0) as client:
                     if msg_id:
-                        await client.post(f"{TELEGRAM_API_URL}/editMessageText", json={"chat_id": chat_id, "message_id": msg_id, "text": result_text, "parse_mode": "HTML"})
+                        await tg_post(client, "editMessageText", {"chat_id": chat_id, "message_id": msg_id, "text": result_text, "parse_mode": "HTML"})
                     else:
-                        await client.post(f"{TELEGRAM_API_URL}/sendMessage", json={"chat_id": chat_id, "text": result_text, "parse_mode": "HTML"})
+                        await tg_post(client, "sendMessage", {"chat_id": chat_id, "text": result_text, "parse_mode": "HTML"})
             except Exception:
                 pass
         return
@@ -1011,9 +1019,9 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
             )
             async with httpx.AsyncClient(timeout=8.0) as client:
                 if progress_msg_id:
-                    await client.post(f"{TELEGRAM_API_URL}/editMessageText", json={"chat_id": chat_id, "message_id": progress_msg_id, "text": init_text, "parse_mode": "HTML", "reply_markup": cancel_markup})
+                    await tg_post(client, "editMessageText", {"chat_id": chat_id, "message_id": progress_msg_id, "text": init_text, "parse_mode": "HTML", "reply_markup": cancel_markup})
                 else:
-                    resp = await client.post(f"{TELEGRAM_API_URL}/sendMessage", json={"chat_id": chat_id, "text": init_text, "parse_mode": "HTML", "reply_markup": cancel_markup})
+                    resp = await tg_post(client, "sendMessage", {"chat_id": chat_id, "text": init_text, "parse_mode": "HTML", "reply_markup": cancel_markup})
                     if resp.status_code == 200:
                         progress_msg_id = resp.json().get("result", {}).get("message_id")
         except Exception:
@@ -1039,7 +1047,7 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
             )
             try:
                 async with httpx.AsyncClient(timeout=5.0) as client:
-                    await client.post(f"{TELEGRAM_API_URL}/editMessageText", json={"chat_id": chat_id, "message_id": progress_msg_id, "text": progress_msg, "parse_mode": "HTML", "reply_markup": cancel_markup})
+                    await tg_post(client, "editMessageText", {"chat_id": chat_id, "message_id": progress_msg_id, "text": progress_msg, "parse_mode": "HTML", "reply_markup": cancel_markup})
             except Exception:
                 pass
 
@@ -1057,9 +1065,9 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
             try:
                 async with httpx.AsyncClient(timeout=8.0) as client:
                     if progress_msg_id:
-                        await client.post(f"{TELEGRAM_API_URL}/editMessageText", json={"chat_id": chat_id, "message_id": progress_msg_id, "text": cancel_text, "parse_mode": "HTML"})
+                        await tg_post(client, "editMessageText", {"chat_id": chat_id, "message_id": progress_msg_id, "text": cancel_text, "parse_mode": "HTML"})
                     else:
-                        await client.post(f"{TELEGRAM_API_URL}/sendMessage", json={"chat_id": chat_id, "text": cancel_text, "parse_mode": "HTML"})
+                        await tg_post(client, "sendMessage", {"chat_id": chat_id, "text": cancel_text, "parse_mode": "HTML"})
             except Exception:
                 pass
         return
@@ -1072,9 +1080,9 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
                 async with httpx.AsyncClient(timeout=8.0) as client:
                     err_text = f"Ошибка скачивания {html.escape(project_name)} на {device_label}:\n{html.escape(err_msg)}"
                     if progress_msg_id:
-                        await client.post(f"{TELEGRAM_API_URL}/editMessageText", json={"chat_id": chat_id, "message_id": progress_msg_id, "text": err_text, "parse_mode": "HTML"})
+                        await tg_post(client, "editMessageText", {"chat_id": chat_id, "message_id": progress_msg_id, "text": err_text, "parse_mode": "HTML"})
                     else:
-                        await client.post(f"{TELEGRAM_API_URL}/sendMessage", json={"chat_id": chat_id, "text": err_text, "parse_mode": "HTML"})
+                        await tg_post(client, "sendMessage", {"chat_id": chat_id, "text": err_text, "parse_mode": "HTML"})
             except Exception:
                 pass
         return
@@ -1111,7 +1119,7 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
         if progress_msg_id:
             try:
                 async with httpx.AsyncClient(timeout=4.0) as client:
-                    await client.post(f"{TELEGRAM_API_URL}/deleteMessage", json={"chat_id": chat_id, "message_id": progress_msg_id})
+                    await tg_post(client, "deleteMessage", {"chat_id": chat_id, "message_id": progress_msg_id})
             except Exception:
                 pass
 
@@ -1142,6 +1150,12 @@ async def handle_incoming_task(task: dict, current_platform: str, device_label: 
         logger.info(f"Получен {action} от облака, отправлен ответный heartbeat.")
         return
 
+    if action == "hello":
+        # «Проверить связь» в боте: ответ доказывает всю цепочку — очередь, подпись, сообщения через облако
+        await _tg_send(task.get("chat_id"), f"<b>{html.escape(device_label)}</b> на связи. Агент {AGENT_VERSION} готов к работе.")
+        logger.info("Проверка связи из бота: ответ отправлен.")
+        return
+
     if action in ("cancel_task", "cancel_active_clone"):
         logger.info(f"Получена команда отмены для '{p_name}'.")
         if p_key:
@@ -1162,8 +1176,8 @@ async def handle_incoming_task(task: dict, current_platform: str, device_label: 
 
 async def _remove_task_from_kvdb_queue(task_id: str):
     """Удаляет задачу по ID из очереди kvdb (если она была перехвачена через SSE быстрее опроса)."""
-    if not task_id:
-        return
+    if not task_id or device_link.is_paired():
+        return  # очередь компьютера пользователя в облаке; повтор задачи отсекает список выполненных id
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
             r = await client.get(f"{KVDB_BASE}/tasks_queue")
@@ -1353,12 +1367,16 @@ async def announce_deferred_task(task: dict, device_label: str) -> None:
 
 
 async def sse_listener(current_platform: str, device_label: str, downloads_dir: Path, logger: logging.Logger):
+    if not (device_link.DEVICE_EVENTS_URL if device_link.is_paired() else SMEE_CHANNEL):
+        logger.warning("Канал мгновенных событий не задан: задачи придут только при опросе очереди.")
+        return
     logger.info("Запуск SSE слушателя событий.")
 
     async def _consume():
         # read-таймаут: после сна TCP-соединение может зависнуть навсегда без единой ошибки
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=15.0, read=90.0, write=15.0, pool=None)) as client:
-            async with client.stream("GET", SMEE_CHANNEL, headers={"Accept": "text/event-stream"}) as response:
+            events_url = device_link.DEVICE_EVENTS_URL if device_link.is_paired() else SMEE_CHANNEL
+            async with client.stream("GET", events_url, headers={"Accept": "text/event-stream"}) as response:
                 logger.info("SSE канал подключен.")
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
@@ -1434,15 +1452,21 @@ async def _take_task_from_kvdb(current_platform: str, device_label: str, downloa
             return False
         task = tasks.pop(idx)
         await client.post(f"{KVDB_BASE}/tasks_queue", content=json.dumps(tasks))
+    await _dispatch_queued_task(task, current_platform, device_label, downloads_dir, logger)
+    return True
+
+
+async def _dispatch_queued_task(task: dict, current_platform: str, device_label: str, downloads_dir: Path, logger: logging.Logger) -> None:
+    """Задача из постоянной очереди (kvdb владельца или очередь компьютера в облаке)."""
     action = task.get("action", "")
     if not is_task_authentic(task, logger):
-        return True
+        return
     if action in _CONTROL_ACTIONS:
         await handle_incoming_task(task, current_platform, device_label, downloads_dir, logger)
-        return True
+        return
     task_id = task.get("id") or f"{action}_{task.get('project_name')}_{task.get('timestamp', int(time.time() * 1000))}"
     if task_id not in get_processed_ids():
-        logger.info(f"Получена задача из kvdb: {task.get('project_name')} ({action})")
+        logger.info(f"Получена задача из очереди: {task.get('project_name')} ({action})")
         record_processed_id(task_id)
         if needs_pc_confirmation(task):
             # Окно ждёт ответа до 15 минут — не блокируем разбор остальной очереди
@@ -1450,7 +1474,33 @@ async def _take_task_from_kvdb(current_platform: str, device_label: str, downloa
         else:
             await announce_deferred_task(task, device_label)
             await handle_incoming_task(task, current_platform, device_label, downloads_dir, logger)
-    return True
+
+
+async def _take_tasks_from_cloud(current_platform: str, device_label: str, downloads_dir: Path, logger: logging.Logger) -> None:
+    """Компьютер пользователя: забирает задачи из своей очереди в облаке (этот же запрос — сигнал «в сети»)."""
+    info = {
+        "version": AGENT_VERSION,
+        "active_tasks": list(ACTIVE_TASKS.keys()),
+        "tools": get_installed_tool_names(downloads_dir),
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        tasks = await device_link.poll(client, info)
+    for task in tasks:
+        if is_task_for_platform(task, current_platform):
+            await _dispatch_queued_task(task, current_platform, device_label, downloads_dir, logger)
+
+
+def _notify_unpaired_blocking() -> None:
+    if not IS_WINDOWS:
+        return  # подключение по коду пока только для Windows
+    import ctypes
+    ctypes.windll.user32.MessageBoxW(
+        None,
+        "Этот компьютер отключён от бота (кнопка «Забыть» в Telegram).\n\n"
+        "Агент остановлен. Чтобы подключить компьютер снова, запустите агент и введите новый код из бота.",
+        "Second Brain",
+        0x40 | 0x10000 | 0x40000,  # MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST
+    )
 
 
 async def run_agent(current_platform: str, device_label: str, downloads_dir: Path, logger: logging.Logger):
@@ -1459,21 +1509,48 @@ async def run_agent(current_platform: str, device_label: str, downloads_dir: Pat
     if IS_WINDOWS:
         current_platform = "windows"
         device_label = "Windows ПК"
+    paired = device_link.is_paired()
+    if paired:
+        device_label = f"Компьютер «{device_link.DEVICE_NAME or 'без названия'}»"
     _WAKE_EVENT = asyncio.Event()
     _SSE_RECONNECT = asyncio.Event()
     _CONFIRM_LOCK = asyncio.Lock()
     logger.info(f"Демон {device_label} ({OS_NAME}) запущен. Опрос очереди и SSE активны.")
-    if not AGENT_SECRET:
-        logger.warning("В .env не задан AGENT_SECRET: агент не будет выполнять задачи из облака")
-    if not KVDB_BUCKET or not SMEE_CHANNEL:
-        logger.warning("В .env не заданы KVDB_BUCKET / SMEE_CHANNEL: агент не получит задачи из облака")
+    if paired:
+        logger.info(f"Компьютер подключён к боту по коду (устройство {device_link.DEVICE_ID}), задачи — через {device_link.CLOUD_URL}")
+    else:
+        if not AGENT_SECRET:
+            logger.warning("В .env не задан AGENT_SECRET: агент не будет выполнять задачи из облака")
+        if not KVDB_BUCKET or not SMEE_CHANNEL:
+            logger.warning("В .env не заданы KVDB_BUCKET / SMEE_CHANNEL: агент не получит задачи из облака")
     await sync_installed_tools_to_cloud(downloads_dir, logger, platform=current_platform)
     asyncio.create_task(sse_listener(current_platform, device_label, downloads_dir, logger))
     asyncio.create_task(heartbeat_loop(current_platform, device_label, downloads_dir, logger))
     await send_platform_heartbeat(current_platform, device_label, OS_NAME, downloads_dir, list(ACTIVE_TASKS.keys()), logger)
 
+    last_cloud_error = ""
     while True:
         spawn_due_postponed(current_platform, device_label, downloads_dir, logger)
+        if paired:
+            try:
+                await _take_tasks_from_cloud(current_platform, device_label, downloads_dir, logger)
+                last_cloud_error = ""
+            except device_link.DeviceRevoked:
+                logger.warning("Компьютер отключён в боте («Забыть»): привязка сброшена, агент останавливается.")
+                device_link.forget_locally()
+                await asyncio.to_thread(_notify_unpaired_blocking)
+                return
+            except Exception as e:
+                if str(e) != last_cloud_error:  # не засоряем журнал одной и той же ошибкой каждые 30 с
+                    logger.warning(f"Опрос облака не удался: {e}")
+                    last_cloud_error = str(e)
+            try:
+                await asyncio.wait_for(_WAKE_EVENT.wait(), timeout=device_link.POLL_INTERVAL_SEC)
+            except asyncio.TimeoutError:
+                pass
+            _WAKE_EVENT.clear()
+            continue
+
         got_task = False
         try:
             got_task = await _take_task_from_kvdb(current_platform, device_label, downloads_dir, logger)

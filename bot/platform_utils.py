@@ -31,8 +31,8 @@ def _user_app_dir() -> Path:
     return base / "SecondBrain"
 
 
-# Настройки, логи и служебные файлы агента
-APP_DIR = _user_app_dir() if IS_FROZEN else PROJECT_ROOT
+# Настройки, логи и служебные файлы агента. SB_APP_DIR — отдельная папка данных (второй агент на том же ПК, проверки)
+APP_DIR = Path(os.environ["SB_APP_DIR"]).expanduser() if os.getenv("SB_APP_DIR") else (_user_app_dir() if IS_FROZEN else PROJECT_ROOT)
 APP_DIR.mkdir(parents=True, exist_ok=True)
 ENV_FILE = APP_DIR / ("agent.env" if IS_FROZEN else ".env")
 
@@ -511,10 +511,12 @@ def remove_autostart() -> bool:
 
 
 def acquire_single_instance(name: str = "SecondBrainAgent"):
-    """Именованный мьютекс Windows: второй экземпляр агента не запускается. None — агент уже работает."""
+    """Именованный мьютекс Windows: второй экземпляр агента с той же папкой данных не запускается. None — уже работает."""
     if not IS_WINDOWS:
         return object()
     import ctypes
+    import hashlib
+    name = f"{name}_{hashlib.sha1(str(APP_DIR).lower().encode('utf-8')).hexdigest()[:8]}"
     handle = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\" + name)
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
         return None

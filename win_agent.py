@@ -60,6 +60,8 @@ def handle_cli() -> bool:
         from bot.platform_utils import APP_DIR, ENV_FILE, IS_FROZEN
         try:
             import bot.runner_service  # noqa: F401
+            import bot.first_run  # noqa: F401
+            import tkinter  # noqa: F401
             import py7zr  # noqa: F401
         except Exception as e:
             logger.error(f"selftest: {e!r}")
@@ -76,7 +78,45 @@ def handle_cli() -> bool:
         from bot.platform_utils import remove_autostart
         print("autostart:", "removed" if remove_autostart() else "FAILED")
         return True
+    if "--pair" in args:
+        # Подключение без окна: --pair 123456 [--name "Рабочий ПК"]
+        from bot import device_link
+        argv = sys.argv[1:]
+        code = argv[argv.index("--pair") + 1] if argv.index("--pair") + 1 < len(argv) else ""
+        name = argv[argv.index("--name") + 1] if "--name" in argv and argv.index("--name") + 1 < len(argv) else ""
+        try:
+            data = device_link.pair(code, name)
+            print(f"paired: {data['device_id']} ({device_link.DEVICE_NAME})")
+        except device_link.PairError as e:
+            print(f"pair FAILED: {e}")
+            sys.exit(1)
+        return True
+    if "--unpair" in args:
+        from bot import device_link
+        device_link.forget_locally()
+        print("unpaired")
+        return True
     return False
+
+
+def ensure_connected() -> bool:
+    """Агенту нужна либо привязка по коду, либо настройки владельца (AGENT_SECRET). Иначе — окно первого запуска."""
+    from bot import device_link
+    from bot.agent_core import AGENT_SECRET
+    if device_link.is_paired() or AGENT_SECRET:
+        return True
+    if not IS_WINDOWS:
+        logger.warning("Компьютер не подключён: запустите агент с параметром --pair <код из бота>.")
+        return False
+    try:
+        from bot.first_run import run_first_run_window
+        paired = run_first_run_window()
+    except Exception as e:
+        logger.error(f"Окно подключения не открылось: {e!r}")
+        return False
+    if not paired:
+        logger.info("Подключение отменено пользователем — агент не запускается.")
+    return paired
 
 
 def main():
@@ -86,6 +126,8 @@ def main():
     instance_lock = acquire_single_instance()
     if instance_lock is None:
         logger.info("Агент уже запущен — второй экземпляр не стартует.")
+        return
+    if not ensure_connected():
         return
     if IS_WINDOWS:
         try:

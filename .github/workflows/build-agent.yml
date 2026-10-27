@@ -27,6 +27,7 @@ jobs:
         run: |
           python tests/test_launch_selection.py
           python tests/test_deferred_confirmation.py
+          python tests/test_device_link.py
 
       - name: Build
         run: pyinstaller --noconfirm packaging/SecondBrainAgent.spec
