@@ -1186,6 +1186,8 @@ RUNTIMES: Dict[str, Dict[str, Any]] = {
     "python": {"label": "Python 3.12", "bins": ["python", "py", "python3"], "winget": "Python.Python.3.12", "brew": "python@3.12"},
     "go": {"label": "Go", "bins": ["go"], "winget": "GoLang.Go", "brew": "go"},
     "rust": {"label": "Rust (cargo)", "bins": ["cargo"], "winget": "Rustlang.Rustup", "brew": "rustup"},
+    # Не среда запуска, а инструмент скачивания: без него не скачать исходники (у гостей Git часто нет)
+    "git": {"label": "Git", "bins": ["git"], "winget": "Git.Git", "brew": "git"},
 }
 
 

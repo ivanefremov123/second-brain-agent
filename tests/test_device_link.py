@@ -148,6 +148,69 @@ async def scenario():
 
 asyncio.run(scenario())
 
+# --- Этап 4: подтверждение на экране вместо 2FA ---
+proj_dir = TMP / "Projects"
+(proj_dir / "lazygit").mkdir(parents=True, exist_ok=True)
+check("confirm: download needs 'Да' on screen", ac.needs_device_confirmation({"action": "clone"}, proj_dir))
+check("confirm: uninstall and runtime install too",
+      ac.needs_device_confirmation({"action": "uninstall"}, proj_dir) and ac.needs_device_confirmation({"action": "install_runtime"}, proj_dir))
+check("confirm: running a downloaded program — no window",
+      not ac.needs_device_confirmation({"action": "auto_run", "project_name": "lazygit"}, proj_dir))
+check("confirm: 'run' of a missing program means download — window",
+      ac.needs_device_confirmation({"action": "auto_run", "project_name": "notdownloaded"}, proj_dir))
+check("confirm: check-connection needs no window", not ac.needs_device_confirmation({"action": "hello"}, proj_dir))
+
+asked, ran = [], []
+real_ask, real_process = ac._ask_on_pc_blocking, ac.process_task
+async def fake_process(task, *a, **k):
+    ran.append(task)
+    if task.get("action") == "install_runtime":
+        return await real_process(task, *a, **k)
+ac.process_task = fake_process
+
+async def confirm_scenario():
+    ac._CONFIRM_LOCK = asyncio.Lock()
+    answer = {"v": "cancel"}
+    def fake_ask(title, text, ok, timeout, allow_later=True):
+        asked.append((text, allow_later)); return answer["v"]
+    ac._ask_on_pc_blocking = fake_ask
+    task = sign_task({"id": f"c_{time.time_ns()}", "action": "clone", "project_name": "fzf", "chat_id": 5, "message_id": 9})
+    await ac.handle_incoming_task(dict(task), "windows", "Компьютер «Рабочий ПК»", proj_dir, log)
+    await asyncio.sleep(0.2)
+    check("confirm: fresh task asks Да/Нет (no 'later')", asked and asked[-1][1] is False and "просит скачать" in asked[-1][0])
+    check("confirm: 'Нет' — nothing downloaded", not ran)
+    answer["v"] = "yes"
+    await ac.handle_incoming_task(dict(task), "windows", "Компьютер «Рабочий ПК»", proj_dir, log)
+    await asyncio.sleep(0.3)
+    check("confirm: 'Да' — download runs once", len(ran) == 1 and ran[0]["action"] == "clone" and ran[0].get("_confirmed"))
+    ran.clear()
+    run_task = sign_task({"id": f"r_{time.time_ns()}", "action": "auto_run", "project_name": "lazygit", "chat_id": 5})
+    n_asked = len(asked)
+    await ac.handle_incoming_task(run_task, "windows", "Компьютер «Рабочий ПК»", proj_dir, log)
+    await asyncio.sleep(0.2)
+    check("confirm: run of downloaded program starts without a window", len(asked) == n_asked and ran and ran[0]["action"] == "auto_run")
+
+    # Git: после установки продолжается скачивание, а не запуск
+    ran.clear()
+    async def fake_install(rt):
+        return {"success": True}
+    ac.install_runtime = fake_install
+    await real_process({"action": "install_runtime", "runtime": "git", "project_name": "fzf", "repo_url": "https://github.com/junegunn/fzf.git", "chat_id": 5},
+                       "windows", "Компьютер «Рабочий ПК»", proj_dir, log)
+    check("git: after install the download continues", ran and ran[-1]["action"] == "clone" and ran[-1]["repo_url"].endswith("fzf.git"))
+
+asyncio.run(confirm_scenario())
+ac._ask_on_pc_blocking, ac.process_task = real_ask, real_process
+
+from bot import github_service as gs
+from bot import runner_service as rs
+check("git: in the winget whitelist", rs.RUNTIMES["git"]["winget"] == "Git.Git")
+real_avail = rs.is_runtime_available
+rs.is_runtime_available = lambda key: key != "git"
+res = asyncio.run(gs.clone_repository("https://gitlab.com/example/sb-no-git-test.git", f"sb_no_git_{time.time_ns()}"))
+rs.is_runtime_available = real_avail
+check("git: missing Git -> offer to install instead of an error", res.get("type") == "missing_runtime" and res.get("runtime") == "git")
+
 # --- Нет обращений к kvdb владельца ---
 check("no kvdb heartbeat/sync when paired",
       asyncio.run(ac.send_platform_heartbeat("windows", "x", "Windows", TMP, [], log)) is None

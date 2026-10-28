@@ -308,6 +308,15 @@ async def clone_repository(
                 if target_dir.exists() and not any(target_dir.iterdir()):
                     target_dir.rmdir()
 
+    from bot.runner_service import is_runtime_available, missing_runtime_result  # runner_service импортирует этот модуль
+    if not is_runtime_available("git"):
+        # Готовой сборки нет, а исходники без Git не скачать: агент предложит поставить его через winget
+        if target_dir.exists() and not any(target_dir.iterdir()):
+            target_dir.rmdir()
+        res = missing_runtime_result("git", "git clone")
+        res["message"] = "Готовой сборки для этой системы нет, а для скачивания исходников нужен Git — на компьютере он не найден."
+        return res
+
     async with prevent_mac_sleep(timeout_seconds=300):
         cmd = wrap_no_sleep(["git", "clone", "--progress", repo_url, str(target_dir)])
         git_env = os.environ.copy()

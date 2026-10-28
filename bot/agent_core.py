@@ -580,18 +580,23 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
             return
         label = RUNTIMES[rt]["label"]
         tool = "winget" if IS_WINDOWS else "Homebrew"
+        # Git нужен для скачивания: после него продолжаем скачивание, а не запуск
+        next_action, next_verb = ("clone", "скачивание") if rt == "git" else ("auto_run", "запуск")
         logger.info(f"Установка среды {label} для {project_name}...")
         msg_id = await _tg_send(
             chat_id,
             f"Устанавливаю <b>{html.escape(label)}</b> на {device_label} через {tool}...\n\n"
-            f"Это может занять несколько минут. После установки {html.escape(project_name)} запустится автоматически.",
+            f"Это может занять несколько минут. После установки {next_verb} {html.escape(project_name)} продолжится автоматически.",
             msg_id=task.get("message_id"),
         )
         res = await install_runtime(rt)
         if res.get("success"):
-            logger.info(f"Среда {label} установлена, перезапуск {project_name}")
-            await _tg_send(chat_id, f"<b>{html.escape(label)} установлена.</b> Запускаю {html.escape(project_name)}...", msg_id=msg_id)
-            await process_task({**task, "action": "auto_run", "message_id": msg_id}, current_platform, device_label, downloads_dir, logger)
+            logger.info(f"Среда {label} установлена, продолжаю: {next_action} {project_name}")
+            await _tg_send(chat_id, f"<b>{html.escape(label)} установлена.</b> Продолжаю: {next_verb} {html.escape(project_name)}...", msg_id=msg_id)
+            next_task = {**task, "action": next_action, "message_id": msg_id}
+            if next_action == "clone" and not next_task.get("repo_url"):
+                next_task["repo_url"] = find_repo_url_in_memory(project_name) or ""
+            await process_task(next_task, current_platform, device_label, downloads_dir, logger)
         else:
             logger.warning(f"Установка {label} не удалась: {res.get('message', '')[:200]}")
             await _tg_send(
@@ -599,7 +604,7 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
                 f"<b>Не удалось установить {html.escape(label)} автоматически.</b>\n\n"
                 f"<pre>{html.escape(res.get('message', '')[:800])}</pre>\n\n"
                 f"Установите вручную и нажмите «Попробовать снова».",
-                markup={"inline_keyboard": [[{"text": "Попробовать снова", "callback_data": f"auto_run:{project_name}"[:64]}]]},
+                markup={"inline_keyboard": [[{"text": "Попробовать снова", "callback_data": (f"install_rt:git:{project_name}" if rt == "git" else f"auto_run:{project_name}")[:64]}]]},
                 msg_id=msg_id,
             )
         return
@@ -1072,6 +1077,20 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
                 pass
         return
 
+    if not clone_res.get("success") and clone_res.get("type") == "missing_runtime":
+        rt = clone_res.get("runtime", "")
+        label = clone_res.get("runtime_label", rt)
+        logger.info(f"Для скачивания {project_name} не хватает {label} — предлагаю установить")
+        await _tg_send(
+            chat_id,
+            f"<b>{html.escape(project_name)}: нужен {html.escape(label)}.</b>\n\n"
+            f"{html.escape(clone_res.get('message', ''))}\n\n"
+            f"Установить {html.escape(label)} автоматически (через winget)? После установки скачивание продолжится само.",
+            markup={"inline_keyboard": [[{"text": f"Установить {label}", "callback_data": f"install_rt:{rt}:{project_name}"[:64]}]]},
+            msg_id=progress_msg_id,
+        )
+        return
+
     if not clone_res.get("success"):
         err_msg = clone_res.get("message", "Неизвестная ошибка")
         logger.error(f"Ошибка скачивания {project_name}: {err_msg}")
@@ -1170,6 +1189,11 @@ async def handle_incoming_task(task: dict, current_platform: str, device_label: 
         logger.info(f"Задача {action} для '{p_name}' пропущена: отменена пользователем")
         return
 
+    if device_link.is_paired() and not task.get("_confirmed") and needs_device_confirmation(task, downloads_dir):
+        # Компьютер пользователя: вместо 2FA — «Да» в окне на экране (злоумышленник с доступом к Telegram её не нажмёт)
+        asyncio.create_task(confirm_and_run(task, current_platform, device_label, downloads_dir, logger))
+        return
+
     t = asyncio.create_task(run_task_wrapper(task, current_platform, device_label, downloads_dir, logger))
     if p_key:
         ACTIVE_TASKS[p_key] = t
@@ -1220,6 +1244,20 @@ def _waited_text(task: dict) -> str:
     return f"{int(age // 3600)} ч {int(age % 3600 // 60)} мин" if age >= 3600 else f"{max(1, int(age // 60))} мин"
 
 
+DEVICE_CONFIRM_ACTIONS = ("clone", "download_url", "uninstall", "install_runtime")
+
+
+def needs_device_confirmation(task: dict, downloads_dir: Path) -> bool:
+    """На компьютере пользователя подтверждаются скачивание, удаление и установка сред (Р-17).
+    Запуск уже скачанной программы — без окна; «Запустить» для нескачанной программы означает скачивание."""
+    action = task.get("action")
+    if action in DEVICE_CONFIRM_ACTIONS:
+        return True
+    if action in ("auto_run", "launch"):
+        return find_project_dir(downloads_dir, task.get("project_name", ""), task.get("local_path")) is None
+    return False
+
+
 def needs_pc_confirmation(task: dict) -> bool:
     """Задача ждала, пока ПК был выключен/спал (или уже откладывалась) и что-то меняет на компьютере."""
     if task.get("action") not in _CONFIRM_VERBS:
@@ -1229,13 +1267,13 @@ def needs_pc_confirmation(task: dict) -> bool:
     return time.time() - float(task.get("signed_at") or time.time()) >= DEFERRED_TASK_AGE_SEC
 
 
-def _ask_on_pc_blocking(title: str, text: str, ok_label: str, timeout_s: int) -> str:
-    """Окно поверх всех окон. Возвращает yes / later / cancel / timeout."""
+def _ask_on_pc_blocking(title: str, text: str, ok_label: str, timeout_s: int, allow_later: bool = True) -> str:
+    """Окно поверх всех окон. Возвращает yes / later / cancel / timeout. Без allow_later — только Да / Нет (Нет = cancel)."""
     if IS_WINDOWS:
         import ctypes
         from ctypes import wintypes
-        MB_YESNOCANCEL, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST = 0x3, 0x20, 0x10000, 0x40000
-        flags = MB_YESNOCANCEL | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST
+        MB_YESNOCANCEL, MB_YESNO, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST = 0x3, 0x4, 0x20, 0x10000, 0x40000
+        flags = (MB_YESNOCANCEL if allow_later else MB_YESNO) | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST
         user32 = ctypes.windll.user32
         try:
             fn = user32.MessageBoxTimeoutW  # недокументированная, но есть во всех Windows начиная с XP
@@ -1244,7 +1282,7 @@ def _ask_on_pc_blocking(title: str, text: str, ok_label: str, timeout_s: int) ->
             res = fn(None, text, title, flags, 0, timeout_s * 1000)
         except AttributeError:
             res = user32.MessageBoxW(None, text, title, flags)
-        return {6: "yes", 7: "later", 2: "cancel", 32000: "timeout"}.get(res, "later")
+        return {6: "yes", 7: "later" if allow_later else "cancel", 2: "cancel", 32000: "timeout"}.get(res, "later")
     if IS_MAC:
         import subprocess as _sp
         esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
@@ -1287,29 +1325,41 @@ async def confirm_and_run(task: dict, current_platform: str, device_label: str, 
     action = task.get("action", "")
     verb = _CONFIRM_VERBS.get(action, "выполнить")
     name = task.get("project_name", "")
+    if action in ("auto_run", "launch") and find_project_dir(downloads_dir, name, task.get("local_path")) is None:
+        verb = "скачать и запустить"
     chat_id = task.get("chat_id")
     reminders = int(task.get("_reminders") or 0)
+    # Свежая задача (компьютер в сети) — подтверждение вместо 2FA на компьютере пользователя: Да / Нет
+    fresh = not reminders and time.time() - float(task.get("signed_at") or time.time()) < DEFERRED_TASK_AGE_SEC
     async with _CONFIRM_LOCK:
-        msg_id = await _tg_send(
-            chat_id,
-            f"<b>{device_label} снова в сети.</b>\n"
-            f"На экране компьютера появилось окно: подтвердите, что нужно {verb} <b>{html.escape(name)}</b>.\n"
-            f"<i>Задача ждёт {_waited_text(task)}.</i>",
-        )
+        if fresh:
+            msg_id = await _tg_send(
+                chat_id,
+                f"На экране «{html.escape(device_label)}» появилось окно: подтвердите, что нужно {verb} <b>{html.escape(name)}</b>.",
+                msg_id=task.get("message_id"),
+            )
+            question = f"Бот Second Brain просит {verb} «{name}».\n\nДа — {verb} сейчас\nНет — отменить"
+        else:
+            msg_id = await _tg_send(
+                chat_id,
+                f"<b>{device_label} снова в сети.</b>\n"
+                f"На экране компьютера появилось окно: подтвердите, что нужно {verb} <b>{html.escape(name)}</b>.\n"
+                f"<i>Задача ждёт {_waited_text(task)}.</i>",
+            )
+            question = (
+                f"Пока компьютер был выключен, вы просили {verb} «{name}».\n\n"
+                f"Да — {verb} сейчас\nНет — напомнить через 30 минут\nОтмена — отменить задачу"
+            )
         logger.info(f"Подтверждение на ПК: {verb} {name} (напоминание {reminders})")
         decision = await asyncio.to_thread(
-            _ask_on_pc_blocking,
-            "Second Brain",
-            f"Пока компьютер был выключен, вы просили {verb} «{name}».\n\n"
-            f"Да — {verb} сейчас\nНет — напомнить через 30 минут\nОтмена — отменить задачу",
-            verb.split()[0].capitalize(),
-            CONFIRM_TIMEOUT_SEC,
+            _ask_on_pc_blocking, "Second Brain", question, verb.split()[0].capitalize(), CONFIRM_TIMEOUT_SEC, not fresh,
         )
     logger.info(f"Решение на ПК для {name}: {decision}")
     if decision == "yes":
         await _tg_send(chat_id, f"Подтверждено на компьютере. Выполняю: {verb} <b>{html.escape(name)}</b>...", msg_id=msg_id)
         task.pop("_reminders", None)
         task.pop("_remind_at", None)
+        task["_confirmed"] = True
         if msg_id:
             task["message_id"] = msg_id
         await handle_incoming_task(task, current_platform, device_label, downloads_dir, logger)
