@@ -257,7 +257,9 @@ async def send_platform_heartbeat(
             "device_id": platform,
             "device_name": device_name,
             "os": os_name,
-            "platform": platform
+            "platform": platform,
+            # Облако показывает в карточке настоящую папку проекта, а не придуманную
+            "projects_dir": str(downloads_dir),
         }
         body = json.dumps(payload)
         async with httpx.AsyncClient(timeout=4.0) as client:
@@ -1536,6 +1538,7 @@ async def _take_tasks_from_cloud(current_platform: str, device_label: str, downl
         "version": AGENT_VERSION,
         "active_tasks": list(ACTIVE_TASKS.keys()),
         "tools": get_installed_tool_names(downloads_dir),
+        "projects_dir": str(downloads_dir),
     }
     async with httpx.AsyncClient(timeout=15.0) as client:
         tasks = await device_link.poll(client, info)

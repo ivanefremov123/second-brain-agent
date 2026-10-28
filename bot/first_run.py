@@ -31,11 +31,12 @@ def run_first_run_window() -> bool:
     except tk.TclError:
         pass
 
-    frm = ttk.Frame(root, padding=18)
+    frm = ttk.Frame(root, padding=16)
     frm.grid()
-    ttk.Label(frm, text="Second Brain Agent", font=("Segoe UI", 14, "bold")).grid(sticky="w")
-    ttk.Label(frm, text=f"Версия {AGENT_VERSION}", foreground="#666").grid(sticky="w")
-    ttk.Label(frm, text=INTRO, wraplength=460, justify="left").grid(sticky="w", pady=(10, 10))
+    ttk.Label(frm, text=f"Second Brain Agent {AGENT_VERSION}", font=("Segoe UI", 13, "bold")).grid(sticky="w")
+    # Широкий текст — меньше строк: на маленьком экране (ноутбук, Песочница Windows) кнопки иначе уходили за край
+    intro = ttk.Label(frm, text=INTRO, wraplength=620, justify="left")
+    intro.grid(sticky="w", pady=(8, 8))
 
     agree = tk.BooleanVar(value=False)
     autostart = tk.BooleanVar(value=True)
@@ -46,19 +47,20 @@ def run_first_run_window() -> bool:
                     command=lambda: refresh()).grid(sticky="w")
     ttk.Checkbutton(frm, text="Запускать агент вместе с Windows", variable=autostart).grid(sticky="w", pady=(2, 0))
 
-    ttk.Label(frm, text="Название компьютера (его увидите в боте):").grid(sticky="w", pady=(12, 2))
-    ttk.Entry(frm, textvariable=name_var, width=32).grid(sticky="w")
-    ttk.Label(frm, text="Код из бота: «Подключить компьютер» — «Получить код»").grid(sticky="w", pady=(10, 2))
-    code_entry = ttk.Entry(frm, textvariable=code_var, width=10, font=("Segoe UI", 16))
-    code_entry.grid(sticky="w")
+    fields = ttk.Frame(frm)
+    fields.grid(sticky="we", pady=(10, 0))
+    ttk.Label(fields, text="Название компьютера (его увидите в боте):").grid(row=0, column=0, sticky="w")
+    ttk.Entry(fields, textvariable=name_var, width=30).grid(row=1, column=0, sticky="w", padx=(0, 16))
+    ttk.Label(fields, text="Код из бота («Получить код»):").grid(row=0, column=1, sticky="w")
+    code_entry = ttk.Entry(fields, textvariable=code_var, width=9, font=("Segoe UI", 14))
+    code_entry.grid(row=1, column=1, sticky="w")
+    # Кнопки — в одной строке с полем кода, чтобы их было видно вместе с ним
+    connect_btn = ttk.Button(fields, text="Подключить", command=lambda: connect())
+    connect_btn.grid(row=1, column=2, padx=(10, 0))
+    ttk.Button(fields, text="Выйти", command=root.destroy).grid(row=1, column=3, padx=(6, 0))
 
-    status = ttk.Label(frm, text="", foreground="#b00020", wraplength=460, justify="left")
-    status.grid(sticky="w", pady=(10, 0))
-    buttons = ttk.Frame(frm)
-    buttons.grid(sticky="e", pady=(12, 0))
-    connect_btn = ttk.Button(buttons, text="Подключить", command=lambda: connect())
-    connect_btn.grid(row=0, column=1, padx=(8, 0))
-    ttk.Button(buttons, text="Выйти", command=root.destroy).grid(row=0, column=0)
+    status = ttk.Label(frm, text="", foreground="#b00020", wraplength=620, justify="left")
+    status.grid(sticky="w", pady=(8, 0))
 
     busy = {"on": False}
 
@@ -109,6 +111,15 @@ def run_first_run_window() -> bool:
 
     root.bind("<Return>", lambda _e: connect() if "disabled" not in connect_btn.state() else None)
     refresh()
+    # Не выше экрана и ближе к его верху: на маленьком экране сначала уменьшаем текст пояснения
+    root.update_idletasks()
+    screen_h = root.winfo_screenheight()
+    if root.winfo_reqheight() > screen_h - 80:
+        intro.configure(font=("Segoe UI", 8))
+        root.update_idletasks()
+    x = max(0, (root.winfo_screenwidth() - root.winfo_reqwidth()) // 2)
+    y = max(0, min((screen_h - root.winfo_reqheight()) // 3, screen_h - root.winfo_reqheight() - 60))
+    root.geometry(f"+{x}+{y}")
     code_entry.focus_set()
     root.mainloop()
     return result["paired"]

@@ -1,3 +1,3 @@
 """Telegram Second Brain Bot package."""
 
-AGENT_VERSION = "0.4.2"
+AGENT_VERSION = "0.4.3"

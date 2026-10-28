@@ -211,6 +211,17 @@ res = asyncio.run(gs.clone_repository("https://gitlab.com/example/sb-no-git-test
 rs.is_runtime_available = real_avail
 check("git: missing Git -> offer to install instead of an error", res.get("type") == "missing_runtime" and res.get("runtime") == "git")
 
+# --- Окружение Python — только Python-проектам ---
+for name, files in {"py_req": ["requirements.txt"], "py_src": ["main.py"], "go_proj": ["go.mod", "main.go"], "exe_build": ["tool.exe"]}.items():
+    d = TMP / "venvcheck" / name
+    d.mkdir(parents=True, exist_ok=True)
+    for f in files:
+        (d / f).write_text("", encoding="utf-8")
+check("venv: Python projects get an environment", rs.is_python_project(TMP / "venvcheck" / "py_req") and rs.is_python_project(TMP / "venvcheck" / "py_src"))
+check("venv: Go project and ready .exe do not", not rs.is_python_project(TMP / "venvcheck" / "go_proj") and not rs.is_python_project(TMP / "venvcheck" / "exe_build"))
+check("venv: skipped without creating .venv", asyncio.run(rs.prepare_python_env(str(TMP / "venvcheck" / "go_proj"))).get("skipped")
+      and not (TMP / "venvcheck" / "go_proj" / ".venv").exists())
+
 # --- Нет обращений к kvdb владельца ---
 check("no kvdb heartbeat/sync when paired",
       asyncio.run(ac.send_platform_heartbeat("windows", "x", "Windows", TMP, [], log)) is None

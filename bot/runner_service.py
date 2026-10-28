@@ -970,11 +970,27 @@ async def generate_usage_guide(local_path: str, project_name: str, repo_url: str
 
     return fallback_data
 
+PYTHON_PROJECT_MARKERS = ("requirements.txt", "pyproject.toml", "setup.py", "setup.cfg", "Pipfile", "environment.yml")
+
+
+def is_python_project(p: Path) -> bool:
+    """Признаки Python-проекта в корне: файлы зависимостей/сборки или исходники .py (без вложенных папок)."""
+    try:
+        if any((p / m).exists() for m in PYTHON_PROJECT_MARKERS):
+            return True
+        return any(f.suffix == ".py" for f in p.iterdir() if f.is_file())
+    except OSError:
+        return False
+
+
 async def prepare_python_env(local_path: str) -> Dict[str, Any]:
     """
     Создает изолированное окружение .venv и устанавливает зависимости из requirements.txt.
     """
     p = Path(local_path)
+    if not is_python_project(p):
+        # Готовая сборка, Go, Rust, Node.js — окружение Python им не нужно, а создаётся оно десятки секунд
+        return {"success": True, "skipped": True, "message": "Не Python-проект: окружение не нужно"}
     venv_dir = p / ".venv"
     if IS_WINDOWS:
         pip_bin = venv_dir / "Scripts" / "pip.exe"

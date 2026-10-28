@@ -10,6 +10,7 @@ import hmac
 import json
 import os
 import platform
+import re
 import socket
 import time
 from typing import Any, Dict, List, Optional
@@ -50,7 +51,12 @@ def is_paired() -> bool:
 
 
 def default_device_name() -> str:
-    return (socket.gethostname() or "Компьютер")[:40]
+    """Имя компьютера, если оно осмысленное. Автоматические имена Windows (DESKTOP-7F3K2Q, GUID в Песочнице)
+    в боте ничего не говорят пользователю — для них «Мой компьютер»."""
+    host = (socket.gethostname() or "").strip()
+    if not host or re.fullmatch(r"(DESKTOP|LAPTOP|WIN|PC)-[A-Z0-9]{5,}", host, re.I) or re.fullmatch(r"[0-9a-f-]{16,}", host, re.I):
+        return "Мой компьютер"
+    return host[:40]
 
 
 def _canonical(obj: Any) -> bytes:
