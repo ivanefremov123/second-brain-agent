@@ -1334,14 +1334,14 @@ async def confirm_and_run(task: dict, current_platform: str, device_label: str, 
     fresh = not reminders and time.time() - float(task.get("signed_at") or time.time()) < DEFERRED_TASK_AGE_SEC
     async with _CONFIRM_LOCK:
         if fresh:
-            msg_id = await _tg_send(
+            notice = _tg_send(
                 chat_id,
                 f"На экране «{html.escape(device_label)}» появилось окно: подтвердите, что нужно {verb} <b>{html.escape(name)}</b>.",
                 msg_id=task.get("message_id"),
             )
             question = f"Бот Second Brain просит {verb} «{name}».\n\nДа — {verb} сейчас\nНет — отменить"
         else:
-            msg_id = await _tg_send(
+            notice = _tg_send(
                 chat_id,
                 f"<b>{device_label} снова в сети.</b>\n"
                 f"На экране компьютера появилось окно: подтвердите, что нужно {verb} <b>{html.escape(name)}</b>.\n"
@@ -1352,12 +1352,15 @@ async def confirm_and_run(task: dict, current_platform: str, device_label: str, 
                 f"Да — {verb} сейчас\nНет — напомнить через 30 минут\nОтмена — отменить задачу"
             )
         logger.info(f"Подтверждение на ПК: {verb} {name} (напоминание {reminders})")
-        decision = await asyncio.to_thread(
+        # Окно — сразу, сообщение в Telegram уходит параллельно: у компьютера пользователя оно идёт через облако (~1 с)
+        msg_id, decision = await asyncio.gather(notice, asyncio.to_thread(
             _ask_on_pc_blocking, "Second Brain", question, verb.split()[0].capitalize(), CONFIRM_TIMEOUT_SEC, not fresh,
-        )
+        ))
     logger.info(f"Решение на ПК для {name}: {decision}")
     if decision == "yes":
-        await _tg_send(chat_id, f"Подтверждено на компьютере. Выполняю: {verb} <b>{html.escape(name)}</b>...", msg_id=msg_id)
+        if not fresh:
+            # У свежей задачи это сообщение сразу заменит прогресс выполнения — не тратим на него время
+            await _tg_send(chat_id, f"Подтверждено на компьютере. Выполняю: {verb} <b>{html.escape(name)}</b>...", msg_id=msg_id)
         task.pop("_reminders", None)
         task.pop("_remind_at", None)
         task["_confirmed"] = True
