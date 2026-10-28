@@ -282,7 +282,8 @@ async def send_telegram_card(
     """Отправляет карточку проекта без эмодзи, с моноширинным путем и кнопками под платформу и тип проекта."""
     if IS_WINDOWS:
         platform = "windows"
-        device_label = "Windows ПК"
+        # У компьютера пользователя — его имя из подключения («Компьютер «Рабочий ПК»»)
+        device_label = device_label if device_link.is_paired() and device_label else "Windows ПК"
     else:
         platform = platform or "mac"
         device_label = device_label or "MacBook"
@@ -505,7 +506,7 @@ async def process_task(task: dict, current_platform: str, device_label: str, dow
     """Выполняет задачу: скачивание, автозапуск, удаление или инструкцию."""
     if IS_WINDOWS:
         current_platform = "windows"
-        device_label = "Windows ПК"
+        device_label = device_label if device_link.is_paired() and device_label else "Windows ПК"
     project_name = task.get("project_name", "downloaded_project")
     repo_url = task.get("repo_url", "")
     chat_id = task.get("chat_id")
